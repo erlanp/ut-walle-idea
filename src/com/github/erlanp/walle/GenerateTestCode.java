@@ -11,11 +11,14 @@ import com.intellij.notification.Notification;
 import com.intellij.notification.NotificationDisplayType;
 import com.intellij.notification.NotificationGroup;
 import com.intellij.notification.Notifications;
+import com.intellij.openapi.ui.MessageDialogBuilder;
 import com.intellij.openapi.ui.MessageType;
 import com.intellij.openapi.util.Pair;
 import com.intellij.psi.PsiAnnotation;
 import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiDirectory;
 import com.intellij.psi.PsiField;
+import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiModifier;
 import com.intellij.psi.PsiParameter;
@@ -28,6 +31,9 @@ import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
 import java.awt.datatransfer.Transferable;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -44,6 +50,16 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public class GenerateTestCode {
+    /**
+     * 输出测试文件类名
+     */
+    public String testClassName;
+
+    /**
+     * 是否使用 junit5
+     */
+    public Boolean junit5 = false;
+
     /**
      * java文件夹， 用于生成测试的 when代码 可以自定义 比如 D:/java/lok/target/test-classes/../../src/
      */
@@ -72,11 +88,6 @@ public class GenerateTestCode {
     private String copyright = "";
 
     /**
-     * 是否使用 junit5
-     */
-    public Boolean junit5 = false;
-
-    /**
      * 常用的 Exception
      */
     private Class importException = Exception.class;
@@ -84,9 +95,6 @@ public class GenerateTestCode {
     private String fileContent = "";
 
     private String importAny = "static org.mockito.ArgumentMatchers";
-
-    // 有输出文件路径比如 "F:/test.txt";
-    private String outputFile = "";
 
     // 用于不确定的泛型 比如 'com.areyoo.lok.service.api.WwService|T': String.class
     private Map<String, Class> genericMap = new HashMap<>(15);
@@ -103,6 +111,35 @@ public class GenerateTestCode {
     private StringBuffer stringBuffer = new StringBuffer();
 
     public void run(PsiClass myClass) throws Exception {
+        PsiFile file = myClass.getContainingFile();
+        PsiDirectory dir = file.getContainingDirectory();
+        String basePath = myClass.getProject().getBasePath().replace("\\", "/");
+
+        String javaFileName = file.toString().substring("PsiJavaFile:".length());
+        String dirPath = dir.toString().substring("PsiDirectory:".length()).replace("\\", "/");
+        String path = dirPath.substring(basePath.length());
+
+        int mainJavaPos = path.indexOf("/src/main/java/");
+        List<String> arr = new ArrayList<>(10);
+        if (mainJavaPos != -1) {
+            arr.addAll(Arrays.asList("", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"));
+        }
+        String testPath = path.replace("/src/main/java/", "/src/test/java/");
+
+        File testFile = null;
+
+        String testFilePath = null;
+
+        for (String numString : arr) {
+            testFilePath = basePath + testPath + "/" + javaFileName.substring(0,
+                    javaFileName.length() - ".java".length()) + numString + "Test.java";
+            testFile = new File(testFilePath);
+            if (!testFile.exists()) {
+                testClassName = javaFileName.substring(0, javaFileName.length() - ".java".length()) + numString;
+                break;
+            }
+        }
+
         genCode(myClass, isSuperclass, true);
         genCode(myClass, isSuperclass, false);
 
@@ -118,6 +155,17 @@ public class GenerateTestCode {
         Notification notification = notificationGroup.createNotification("Generate UT complate, Copied to clipboard",
                 MessageType.INFO);
         Notifications.Bus.notify(notification);
+
+        File testDir = new File(basePath + testPath);
+        if (testClassName == null || !(testDir.exists() || testDir.mkdirs())) {
+            // 如果没有mkdir权限或者不确定测试文件夹位置
+            MessageDialogBuilder.yesNo("Generate UT complate", "Generate UT complate, Copied to clipboard").show();
+        } else {
+            BufferedWriter writer = new BufferedWriter(new FileWriter(testFilePath));
+            writer.write(stringBuffer.toString());
+            writer.close();
+            MessageDialogBuilder.yesNo("Generate UT complate", "Generate UT complate, " + testFilePath).show();
+        }
     }
 
     private Boolean isInit = true;
@@ -141,7 +189,7 @@ public class GenerateTestCode {
                 myClass.getQualifiedName().length() - myClass.getName().length() - 1);
         println("/*\n" +
                 " * Copyright" + copyright + "\n" +
-                " */");
+                " */\n");
         println("package " + currPackage + ";");
         println("");
 
@@ -181,10 +229,10 @@ public class GenerateTestCode {
 
 
         if (baseTest == null) {
-            println("public class " + name + "Test {");
+            println("public class " + (testClassName != null ? testClassName : name) + "Test {");
         } else {
             setImport(baseTest.getName());
-            println("public class " + name + "Test extends " + baseTest.getSimpleName() + " {");
+            println("public class " + (testClassName != null ? testClassName : name) + "Test extends " + baseTest.getSimpleName() + " {");
         }
 
         setImport("org.mockito.InjectMocks");
