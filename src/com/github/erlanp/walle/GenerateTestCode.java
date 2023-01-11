@@ -1146,11 +1146,11 @@ public class GenerateTestCode {
 
     private Boolean zeroConstructor(PsiClass aClass) {
         for (PsiMethod item : aClass.getConstructors()) {
-            if (item.hasModifier(JvmModifier.PUBLIC) && item.getParameters().length == 0) {
-                return true;
+            if (!item.hasModifier(JvmModifier.PUBLIC) && item.getParameters().length == 0) {
+                return false;
             }
         }
-        return false;
+        return true;
     }
 
     private String getVo(PsiClass myClass, List<PsiField> lombokFieldList) {
