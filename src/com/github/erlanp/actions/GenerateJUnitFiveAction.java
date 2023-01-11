@@ -1,5 +1,6 @@
 package com.github.erlanp.actions;
 
+import com.github.erlanp.utils.ErrorUtils;
 import com.github.erlanp.utils.PsiClassUtils;
 import com.github.erlanp.walle.GenerateTestCode;
 import com.intellij.openapi.actionSystem.AnAction;
@@ -20,6 +21,7 @@ public class GenerateJUnitFiveAction extends AnAction {
             gen.run(psiClass);
         } catch (Exception exp) {
             exp.printStackTrace();
+            ErrorUtils.showError(exp);
         }
     }
 }

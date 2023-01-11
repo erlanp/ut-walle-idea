@@ -448,7 +448,7 @@ public class GenerateTestCode {
                 // 取得每个参数的初始化
                 PsiType psiCurrType = psiTypes.get(i);
                 PsiClass currClass = PsiUtil.resolveClassInType(psiCurrType);
-                if (currClass.getQualifiedName() == null && pair.getSecond() != null
+                if (currClass != null && currClass.getQualifiedName() == null && pair.getSecond() != null
                         && pair.getSecond().getSubstitutionMap() != null
                         && pair.getSecond().getSubstitutionMap().containsKey(currClass)) {
                     // 如果是范型
@@ -723,7 +723,7 @@ public class GenerateTestCode {
 
         String setLine = null;
         PsiClass returnClass = PsiUtil.resolveClassInType(returnType);
-        if (returnClass.getQualifiedName() == null && pair.getSecond() != null
+        if (returnClass != null && returnClass.getQualifiedName() == null && pair.getSecond() != null
                 && pair.getSecond().getSubstitutionMap() != null
                 && pair.getSecond().getSubstitutionMap().containsKey(returnClass)) {
             // 如果是范型
@@ -735,7 +735,6 @@ public class GenerateTestCode {
                     getInitVo(returnClass.getQualifiedName()) + ";";
         } else if (returnType instanceof PsiClassReferenceType) {
             PsiClassReferenceType psiClassReferenceType = (PsiClassReferenceType) returnType;
-            PsiClass psiClass = psiClassReferenceType.resolveGenerics().getElement();
 
             String returnTypeText = returnType.getCanonicalText();
             int same = 0;
@@ -746,11 +745,12 @@ public class GenerateTestCode {
                 }
                 same++;
             }
-            if (psiClass.getQualifiedName() != null && psiClass.getQualifiedName().startsWith("java.lang")) {
+            if (returnTypeText != null && returnTypeText.startsWith("java.lang")) {
                 setLine = getPresentableText(returnType.getPresentableText()) + " then" + number + " = " +
-                        getDefaultVal(psiClass.getQualifiedName()) + ";";
-            } else if (psiClass.getQualifiedName() != null && Arrays.asList("java.util.List", "java.util.Collection")
-                    .contains(psiClass.getQualifiedName())) {
+                        getDefaultVal(returnTypeText) + ";";
+            } else if (returnTypeText != null && Arrays.asList(returnTypeText.startsWith("java.util.List"),
+                    returnTypeText.startsWith("java.util.Collection"))
+                    .contains(true)) {
                 setImport("java.util.List");
                 setImport("java.util.ArrayList");
                 if (returnTypeText.contains("<")) {
@@ -759,8 +759,9 @@ public class GenerateTestCode {
                 // 无法确定传参类型
                 setLine = getPresentableText(returnType.getPresentableText()) + " then" + number + " = new " +
                         "ArrayList<>(10);";
-            } else if (psiClass.getQualifiedName() != null && Arrays.asList("java.util.Map", "java.util.HashMap")
-                    .contains(psiClass.getQualifiedName())) {
+            } else if (returnTypeText != null && Arrays.asList(returnTypeText.startsWith("java.util.Map"),
+                    returnTypeText.startsWith("java.util.HashMap"))
+                    .contains(true)) {
                 setImport("java.util.Map");
                 setImport("java.util.HashMap");
                 if (returnTypeText.contains("<")) {
@@ -769,9 +770,9 @@ public class GenerateTestCode {
                 // 无法确定传参类型
                 setLine = getPresentableText(returnType.getPresentableText()) + " then" + number + " = new HashMap<>" +
                         "(15);";
-            } else if (psiClass.getQualifiedName() != null) {
+            } else if (returnTypeText != null) {
                 setLine = getPresentableText(returnType.getPresentableText()) + " then" + number + " = " +
-                        getDefaultVal(psiClass.getQualifiedName()) + ";";
+                        getDefaultVal(returnTypeText) + ";";
             } else {
                 // 无确定类型
                 setLine = returnType.getPresentableText() + " then" + number + " = null;";
@@ -1254,10 +1255,6 @@ public class GenerateTestCode {
             } else if (isVo(cls)) {
                 result = getInitVo(className);
             } else if (className == null) {
-                PsiClassReferenceType paramReferenceType = null;
-                if (cls instanceof PsiClassReferenceType) {
-                    paramReferenceType = (PsiClassReferenceType) cls;
-                }
                 return null;
             } else {
                 result = "new " + getType(className) + "()";
@@ -1493,6 +1490,7 @@ public class GenerateTestCode {
         if (type == null) {
             return type;
         }
+        setImport(type);
         if (type.indexOf(";") != -1) {
             type = type.substring(2, type.indexOf(";"));
         }
