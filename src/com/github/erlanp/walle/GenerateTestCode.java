@@ -250,6 +250,8 @@ public class GenerateTestCode {
         List<String> valueList = new ArrayList<>();
 
         List<String> scalarList = Arrays.asList("short", "byte", "char", "long", "int", "double", "float", "boolean");
+
+        // 生成 mock
         for (PsiField psiField : fields) {
             PsiType psiType = psiField.getType();
             if (psiField.hasModifier(JvmModifier.FINAL) || psiField.hasModifier(JvmModifier.STATIC)
@@ -259,6 +261,7 @@ public class GenerateTestCode {
             }
 
             PsiClass psiClass = PsiUtil.resolveClassInType(psiField.getType());
+            List<Pair<PsiMethod, PsiSubstitutor>> allPairMethod = new ArrayList<>(getPairMethods(psiClass));
             if (psiField.getAnnotations().length > 0 && PsiClassUtils.isNotSystemClass(psiClass)) {
                 setImport("static org.mockito.Mockito.mock");
                 if (useAnswers) {
@@ -271,25 +274,25 @@ public class GenerateTestCode {
                 println("private " + psiClass.getName() + " " + psiField.getName() + ";");
                 println("");
 
-                for (PsiMethod serviceMethod : getDeclaredMethods(psiClass, true)) {
+                for (Pair<PsiMethod, PsiSubstitutor> pair : allPairMethod) {
+                    PsiMethod serviceMethod = pair.getFirst();
+                    if (!serviceMethod.hasModifier(JvmModifier.PUBLIC)) {
+                        continue;
+                    }
                     String methodStr = psiField.getName() + "." + serviceMethod.getName() + "(";
                     PsiType t = serviceMethod.getReturnType();
                     if (t == null) {
                         continue;
                     }
                     if (!"void".equals(t.getCanonicalText()) && ("".equals(fileContent) || fileContent.indexOf(methodStr) > 0)) {
-                        if (!map.containsKey(methodStr)) {
-                            map.put(methodStr, new ArrayList<>(10));
-                        }
-                        String whenStr = getWhen(serviceMethod, number, psiField);
+                        map.putIfAbsent(methodStr, new ArrayList<>(10));
+                        String whenStr = getWhen(pair, number, psiField);
                         if (whenStr != null) {
-                            map.get(methodStr).add(getWhen(serviceMethod, number, psiField));
+                            map.get(methodStr).add(getWhen(pair, number, psiField));
                         }
                         number++;
                     } else if ("void".equals(t.getCanonicalText()) && ("".equals(fileContent) || fileContent.indexOf(methodStr) > 0)) {
-                        if (!map.containsKey(methodStr)) {
-                            map.put(methodStr, new ArrayList<>(10));
-                        }
+                        map.putIfAbsent(methodStr, new ArrayList<>(10));
                         map.get(methodStr).add(getVoidWhen(serviceMethod, psiField));
                         number++;
                     }
@@ -313,13 +316,13 @@ public class GenerateTestCode {
             }
             println((junit5 ? "@BeforeEach" : "@Before") + "\n" +
                     "    public void before() {\n" +
-                    "        MockitoAnnotations.openMocks(this);\n");
+                    "        MockitoAnnotations.openMocks(this);");
             if (valueList.size() > 0) {
                 valueList.forEach((value) -> {
                     println("        " + value);
                 });
             }
-            println("    }");
+            println("    }\n");
         } else if (valueList.size() > 0) {
             // 生成反射给成员变量赋值的代码
             if (junit5) {
@@ -404,7 +407,6 @@ public class GenerateTestCode {
 
     private void methods(PsiClass myClass, Map<String, Set<List<String>>> whenMap,
                          Map<String, Map<String, String>> putString) throws Exception {
-        myClass.getAllMethodsAndTheirSubstitutors();
         List<Pair<PsiMethod, PsiSubstitutor>> allPairMethod = new ArrayList<>(getPairMethods(myClass));
 
         Map<String, Integer> methodCount = new HashMap<>();
@@ -444,14 +446,32 @@ public class GenerateTestCode {
                     "() throws Exception {");
             for (int i = 0; i < psiTypes.size(); i++) {
                 // 取得每个参数的初始化
-                if (isVo(PsiUtil.resolveClassInType(psiTypes.get(i)))) {
-                    String setLine = psiTypes.get(i).getPresentableText() + " " + parameter[i].getName() + " = " +
-                            getInitVo(psiTypes.get(i).getCanonicalText()) + ";";
+                PsiType psiCurrType = psiTypes.get(i);
+                PsiClass currClass = PsiUtil.resolveClassInType(psiCurrType);
+                if (currClass.getQualifiedName() == null && pair.getSecond() != null
+                        && pair.getSecond().getSubstitutionMap() != null
+                        && pair.getSecond().getSubstitutionMap().containsKey(currClass)) {
+                    // 如果是范型
+                    psiCurrType = pair.getSecond().getSubstitutionMap().get(currClass);
+                    currClass = PsiUtil.resolveClassInType(psiCurrType);
+                }
+
+                if (isVo(currClass)) {
+                    String setLine = psiCurrType.getPresentableText() + " " + parameter[i].getName() + " = " +
+                            getInitVo(psiCurrType.getCanonicalText()) + ";";
                     println(setLine);
                 } else {
-                    String setLine = psiTypes.get(i).getPresentableText() + " " + parameter[i].getName() + " = " +
-                            getDefaultVal(psiTypes.get(i).getCanonicalText()) + ";";
-                    println(setLine);
+                    String result = getDefaultVal(psiCurrType.getCanonicalText());
+                    if (result != null) {
+                        println(psiCurrType.getPresentableText() + " " + parameter[i].getName() + " = " +
+                                getDefaultVal(psiCurrType.getCanonicalText()) + ";");
+                    } else {
+                        println(psiCurrType.getPresentableText() + " " + parameter[i].getName() + " = " +
+                                getDefaultVal(psiCurrType) + ";");
+
+                        println(psiCurrType.getPresentableText() + " " + parameter[i].getName() + " = " +
+                                getDefaultVal(currClass) + ";");
+                    }
                 }
                 meta.add(parameter[i].getName());
                 metaType.add(getType(psiTypes.get(i).getCanonicalText()) + ".class");
@@ -459,7 +479,15 @@ public class GenerateTestCode {
             if (method.getReturnType() == null) {
                 continue;
             }
-            String returnType = method.getReturnType().getCanonicalText();
+            PsiClass currClass = PsiUtil.resolveClassInType(method.getReturnType());
+            String returnType = null;
+            if (currClass != null && currClass.getQualifiedName() == null && pair.getSecond() != null
+                    && pair.getSecond().getSubstitutionMap() != null
+                    && pair.getSecond().getSubstitutionMap().containsKey(currClass)) {
+                returnType = pair.getSecond().getSubstitutionMap().get(currClass).getCanonicalText();
+            } else {
+                returnType = method.getReturnType().getCanonicalText();
+            }
 
             String defString = "";
             String assertString = "";
@@ -540,7 +568,8 @@ public class GenerateTestCode {
                     PsiType mapKeyType = substitutionList.get(1);
                     String defaultVal = getDefaultVal(mapType);
                     String defaultKeyVal = getDefaultVal(mapKeyType);
-                    if (!(defaultVal == null || "".equals(defaultVal)) && !(defaultKeyVal == null || "".equals(defaultKeyVal))) {
+                    if (!(defaultVal == null || "".equals(defaultVal))
+                            && !(defaultKeyVal == null || "".equals(defaultKeyVal))) {
                         if ("java.lang.String".equals(mapKeyType.getCanonicalText()) && putString.containsKey(method.getName())) {
                             int finalI = i;
                             putString.get(method.getName()).forEach((key, value) -> {
@@ -604,16 +633,6 @@ public class GenerateTestCode {
         } else {
             return arr[count];
         }
-    }
-
-    private List<String> getMethodParameterTypes(PsiMethod method) throws Exception {
-        PsiParameter[] genericParameterTypes = method.getParameterList().getParameters();
-        List<String> list = new ArrayList<>(genericParameterTypes.length);
-        for (int i = 0; i < genericParameterTypes.length; i++) {
-            PsiParameter genericType = genericParameterTypes[i];
-            list.add(getDefType(getType(genericType.getName()), genericType));
-        }
-        return list;
     }
 
     private void setPutString(Map<String, Map<String, String>> putString, Map<String, Set<String>> whenMethod) {
@@ -696,13 +715,21 @@ public class GenerateTestCode {
         return false;
     }
 
-    private String getWhen(PsiMethod serviceMethod, int number, PsiField psiField) throws Exception {
+    private String getWhen(Pair<PsiMethod, PsiSubstitutor> pair, int number, PsiField psiField) throws Exception {
+        PsiMethod serviceMethod = pair.getFirst();
         String serviceName = psiField.getName();
 
         PsiType returnType = serviceMethod.getReturnType();
 
         String setLine = null;
         PsiClass returnClass = PsiUtil.resolveClassInType(returnType);
+        if (returnClass.getQualifiedName() == null && pair.getSecond() != null
+                && pair.getSecond().getSubstitutionMap() != null
+                && pair.getSecond().getSubstitutionMap().containsKey(returnClass)) {
+            // 如果是范型
+            returnType = pair.getSecond().getSubstitutionMap().get(returnClass);
+            returnClass = PsiUtil.resolveClassInType(returnType);
+        }
         if (isVo(returnClass)) {
             setLine = getPresentableText(returnType.getPresentableText()) + " then" + number + " = " +
                     getInitVo(returnClass.getQualifiedName()) + ";";
@@ -1006,41 +1033,45 @@ public class GenerateTestCode {
         }
 
         List<PsiMethod> listMethod = getMethods(myClass);
-        for (PsiMethod method : listMethod) {
-            JvmParameter[] parameter = method.getParameters();
-            if (method.getName().length() > 3 && "set".equals(method.getName().substring(0, 3)) && parameter.length == 1
-                    && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")) {
-                defaultMap.put(myClass.getQualifiedName(), getVo(myClass));
+        if (zeroConstructor(myClass)) {
+            // 如果构造函数可以空参数
+            for (PsiMethod method : listMethod) {
+                JvmParameter[] parameter = method.getParameters();
+                if (method.getName().length() > 3 && "set".equals(method.getName().substring(0, 3)) && parameter.length == 1
+                        && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")) {
+                    defaultMap.put(myClass.getQualifiedName(), getVo(myClass));
+                    return true;
+                }
+            }
+            List<PsiField> lombokFieldList = getLombokField(myClass);
+            if (!lombokFieldList.isEmpty()) {
+                defaultMap.put(myClass.getQualifiedName(), getVo(myClass, lombokFieldList));
                 return true;
             }
         }
-        List<PsiField> lombokFieldList = getLombokField(myClass);
-        if (!lombokFieldList.isEmpty()) {
-            defaultMap.put(myClass.getQualifiedName(), getVo(myClass, lombokFieldList));
-            return true;
-        }
+
         for (PsiMethod method : listMethod) {
             JvmParameter[] parameter = method.getParameters();
-            if (method.hasModifier(JvmModifier.STATIC)
+            if (method.hasModifier(JvmModifier.STATIC) && method.hasModifier(JvmModifier.PUBLIC)
                     && myClass.getQualifiedName().equals(method.getReturnType().getCanonicalText())
-                    && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")) {
-                if (method.hasModifier(JvmModifier.STATIC) && parameter.length == 0) {
-                    defaultMap.put(myClass.getQualifiedName(), "return " + myClass.getName() + "." + method.getName() +
-                            "();");
-                    return true;
-                }
+                    && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")
+                    && parameter.length == 0) {
+                defaultMap.put(myClass.getQualifiedName(), "return " + myClass.getName() + "." + method.getName() +
+                        "();");
+                return true;
             }
         }
         for (PsiMethod method : listMethod) {
             PsiParameter[] parameter = method.getParameterList().getParameters();
-            if (method.hasModifier(JvmModifier.STATIC)
+            if (method.hasModifier(JvmModifier.STATIC) && method.hasModifier(JvmModifier.PUBLIC)
                     && myClass.getQualifiedName().equals(method.getReturnType().getCanonicalText())
-                    && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")) {
-                if (parameter.length == 1) {
-                    defaultMap.put(myClass.getQualifiedName(), "return " + myClass.getName() + "." + method.getName() +
-                            "(" + getDefaultVal(parameter[0]) + ");");
-                    return true;
-                }
+                    && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")
+                    && parameter.length == 1
+                    && !myClass.getQualifiedName().equals(parameter[0].getType().getCanonicalText())) {
+
+                defaultMap.put(myClass.getQualifiedName(), "return " + myClass.getName() + "." + method.getName() +
+                        "(" + getDefaultVal(parameter[0]) + ");");
+                return true;
             }
         }
 
@@ -1114,7 +1145,7 @@ public class GenerateTestCode {
 
     private Boolean zeroConstructor(PsiClass aClass) {
         for (PsiMethod item : aClass.getConstructors()) {
-            if (item.getParameters().length == 0) {
+            if (item.hasModifier(JvmModifier.PUBLIC) && item.getParameters().length == 0) {
                 return true;
             }
         }
@@ -1126,6 +1157,10 @@ public class GenerateTestCode {
         String localType = getType(myClass.getQualifiedName());
         result.add(localType + " vo = new " + localType + "();\n");
         for (PsiField field : lombokFieldList) {
+            if (myClass.getQualifiedName().equals(field.getType().getCanonicalText())) {
+                // 如果成员是类自己
+                continue;
+            }
             String name = field.getName().substring(0, 1).toUpperCase(Locale.ENGLISH) + field.getName().substring(1);
             if (fileContent.contains(name + "(")) {
                 result.add("vo.set" + name + "(" + getDefaultVal(field.getType()) + ");\n");
@@ -1137,6 +1172,10 @@ public class GenerateTestCode {
         }
         // 如果没有匹配，就选第一个赋值
         for (PsiField field : lombokFieldList) {
+            if (myClass.getQualifiedName().equals(field.getType().getCanonicalText())) {
+                // 如果成员是类自己
+                continue;
+            }
             String name = field.getName().substring(0, 1).toUpperCase(Locale.ENGLISH) + field.getName().substring(1);
             result.add("vo.set" + name + "(" + getDefaultVal(field.getType()) + ");\n");
         }
@@ -1153,6 +1192,7 @@ public class GenerateTestCode {
             if (!method.hasModifier(JvmModifier.STATIC) && method.getName().length() >= 4
                     && "set".equals(method.getName().substring(0, 3)) && parameter.length == 1
                     && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")
+                    && !myClass.getQualifiedName().equals(parameter[0].getType().getCanonicalText())
                     && fileContent.contains(method.getName().substring(4) + "(")) {
                 result.add("vo." + method.getName() + "(" + getDefaultVal(parameter[0]) + ");\n");
             }
@@ -1165,7 +1205,8 @@ public class GenerateTestCode {
             PsiParameter[] parameter = method.getParameterList().getParameters();
             if (!method.hasModifier(JvmModifier.STATIC) && method.getName().length() >= 4
                     && "set".equals(method.getName().substring(0, 3)) && parameter.length == 1
-                    && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")) {
+                    && !getAnnotations(method.getAnnotations()).contains("java.lang.Deprecated")
+                    && !myClass.getQualifiedName().equals(parameter[0].getType().getCanonicalText())) {
                 result.add("vo." + method.getName() + "(" + getDefaultVal(parameter[0]) + ");\n");
                 break;
             }
@@ -1207,9 +1248,17 @@ public class GenerateTestCode {
             setImport(className);
             if (defaultMap.get(cls) != null) {
                 result = getInitVo(className);
-            } else if (cls.isInterface()) {
+            } else if (cls.isInterface() && !className.startsWith("java.util.")) {
                 result = getMock(cls);
                 newMap.put(className, result);
+            } else if (isVo(cls)) {
+                result = getInitVo(className);
+            } else if (className == null) {
+                PsiClassReferenceType paramReferenceType = null;
+                if (cls instanceof PsiClassReferenceType) {
+                    paramReferenceType = (PsiClassReferenceType) cls;
+                }
+                return null;
             } else {
                 result = "new " + getType(className) + "()";
                 newMap.put(className, result);
@@ -1441,6 +1490,9 @@ public class GenerateTestCode {
     }
 
     private String getType(String type) {
+        if (type == null) {
+            return type;
+        }
         if (type.indexOf(";") != -1) {
             type = type.substring(2, type.indexOf(";"));
         }
@@ -1464,7 +1516,7 @@ public class GenerateTestCode {
     }
 
     private void setImport(String name) {
-        if (!isInit || importSet.contains(name)) {
+        if (name == null || !isInit || importSet.contains(name)) {
             return;
         }
         List<StringBuffer> list = new ArrayList<>(10);
