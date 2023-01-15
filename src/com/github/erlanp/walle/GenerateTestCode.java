@@ -5,36 +5,43 @@
 package com.github.erlanp.walle;
 
 import com.github.erlanp.utils.PsiClassUtils;
+import com.intellij.codeInsight.CodeInsightUtil;
+import com.intellij.lang.Language;
 import com.intellij.lang.jvm.JvmModifier;
 import com.intellij.lang.jvm.JvmParameter;
 import com.intellij.notification.Notification;
 import com.intellij.notification.NotificationDisplayType;
 import com.intellij.notification.NotificationGroup;
 import com.intellij.notification.Notifications;
+import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.ui.MessageDialogBuilder;
 import com.intellij.openapi.ui.MessageType;
 import com.intellij.openapi.util.Pair;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.PsiAnnotation;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiDirectory;
 import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiFile;
+import com.intellij.psi.PsiManager;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiModifier;
 import com.intellij.psi.PsiParameter;
 import com.intellij.psi.PsiSubstitutor;
 import com.intellij.psi.PsiType;
+import com.intellij.psi.codeStyle.CodeStyleManager;
 import com.intellij.psi.impl.source.PsiClassReferenceType;
 import com.intellij.psi.util.PsiUtil;
 
-import java.awt.*;
-import java.awt.datatransfer.Clipboard;
+import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
-import java.awt.datatransfer.Transferable;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -110,8 +117,15 @@ public class GenerateTestCode {
 
     private StringBuffer stringBuffer = new StringBuffer();
 
+    private Boolean isInit = true;
+
     public void run(PsiClass myClass) throws Exception {
         PsiFile file = myClass.getContainingFile();
+        Language language = CodeInsightUtil.findJavaOrLikeLanguage(file);
+        if (!language.toString().contains("JAVA")) {
+            MessageDialogBuilder.yesNo("Only Java is supported", "Only Java is supported").show();
+            return;
+        }
         PsiDirectory dir = file.getContainingDirectory();
         String basePath = myClass.getProject().getBasePath().replace("\\", "/");
 
@@ -127,12 +141,11 @@ public class GenerateTestCode {
         String testPath = path.replace("/src/main/java/", "/src/test/java/");
 
         File testFile = null;
-
+        String testFileClass = null;
         String testFilePath = null;
-
         for (String numString : arr) {
-            testFilePath = basePath + testPath + "/" + javaFileName.substring(0,
-                    javaFileName.length() - ".java".length()) + numString + "Test.java";
+            testFileClass = javaFileName.substring(0, javaFileName.length() - ".java".length()) + numString + "Test";
+            testFilePath = basePath + testPath + "/" + testFileClass + ".java";
             testFile = new File(testFilePath);
             if (!testFile.exists()) {
                 testClassName = javaFileName.substring(0, javaFileName.length() - ".java".length()) + numString;
@@ -144,32 +157,57 @@ public class GenerateTestCode {
         genCode(myClass, isSuperclass, false);
 
         // 写入剪切板
-        Clipboard clip = Toolkit.getDefaultToolkit().getSystemClipboard();
-        Transferable tText = new StringSelection(stringBuffer.toString());
-        clip.setContents(tText, null);
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(stringBuffer.toString()), null);
 
         // 发通知
+        createNotification();
+
+        File testDir = new File(basePath + testPath);
+        if (testClassName == null || !(testDir.exists() || testDir.mkdirs())) {
+            // 如果没有mkdir权限或者不确定测试文件夹位置
+            MessageDialogBuilder.yesNo("Generate UT complate", "Generate UT complate, Copied to clipboard").show();
+            return;
+        }
+
+        positionCursor(myClass, testFilePath);
+    }
+
+    private void createNotification() {
         NotificationGroup notificationGroup = new NotificationGroup("walle generate UT plugin",
                 NotificationDisplayType.BALLOON, true);
 
         Notification notification = notificationGroup.createNotification("Generate UT complate, Copied to clipboard",
                 MessageType.INFO);
         Notifications.Bus.notify(notification);
-
-        File testDir = new File(basePath + testPath);
-        if (testClassName == null || !(testDir.exists() || testDir.mkdirs())) {
-            // 如果没有mkdir权限或者不确定测试文件夹位置
-            MessageDialogBuilder.yesNo("Generate UT complate", "Generate UT complate, Copied to clipboard").show();
-        } else {
-            BufferedWriter writer = new BufferedWriter(new FileWriter(testFilePath));
-            writer.write(stringBuffer.toString());
-            writer.close();
-            MessageDialogBuilder.yesNo("Generate UT complate", "Generate UT complate, " + testFilePath).show();
-        }
     }
 
-    private Boolean isInit = true;
+    // 新建的UT文件并转到新建的UT文件
+    private void positionCursor(PsiClass myClass, String testFilePath) throws IOException {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(testFilePath))) {
+            writer.write(stringBuffer.toString());
+        } catch (IOException exp) {
+            throw exp;
+        }
+        MessageDialogBuilder.yesNo("Generate UT complate", "Generate UT complate, " + testFilePath).show();
 
+        VirtualFile virtualFile = VirtualFileManager.getInstance().refreshAndFindFileByNioPath(Paths.get(testFilePath));
+        if (virtualFile == null) {
+            return;
+        }
+        PsiFile psiFile = PsiManager.getInstance(myClass.getProject()).findFile(virtualFile);
+
+        if (psiFile == null) {
+            return;
+        }
+        WriteCommandAction.runWriteCommandAction(myClass.getProject(), () -> {
+            // 格式化
+            CodeStyleManager.getInstance(myClass.getProject()).reformatText(psiFile, 0, stringBuffer.length());
+            // 转到新建的UT文件
+            CodeInsightUtil.positionCursor(myClass.getProject(), psiFile, myClass.getSourceElement());
+        });
+    }
+
+    // 生成UT内容
     private void genCode(PsiClass myClass, Boolean isSuperclass, Boolean init) throws Exception {
         // 生成测试代码
         if ("java.lang.Object".equals(myClass.getQualifiedName())) {
@@ -594,10 +632,11 @@ public class GenerateTestCode {
 
             if ("void".equals(returnType)) {
                 setImport(importException.getName());
+                setImport("java.util.Arrays");
                 println("try {");
                 // 定义常用的 Exception
                 println("} catch (" + importException.getSimpleName() + " exp) {");
-                println("error = exp.getMessage();");
+                println("error = Arrays.toString(exp.getStackTrace());");
                 println("}");
                 println("Assert.assertTrue(error == null);");
             } else {
