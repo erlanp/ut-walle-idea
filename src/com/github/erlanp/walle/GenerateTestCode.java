@@ -30,6 +30,7 @@ import com.intellij.psi.PsiModifier;
 import com.intellij.psi.PsiParameter;
 import com.intellij.psi.PsiSubstitutor;
 import com.intellij.psi.PsiType;
+import com.intellij.psi.PsiTypeParameter;
 import com.intellij.psi.codeStyle.CodeStyleManager;
 import com.intellij.psi.impl.source.PsiClassReferenceType;
 import com.intellij.psi.util.PsiUtil;
@@ -265,7 +266,6 @@ public class GenerateTestCode {
                 " * @date " + new SimpleDateFormat("yyyy-MM-dd").format(new Date()) + "\n" +
                 " */");
 
-
         if (baseTest == null) {
             println("public class " + (testClassName != null ? testClassName : name) + "Test {");
         } else {
@@ -325,13 +325,16 @@ public class GenerateTestCode {
                     if (!"void".equals(t.getCanonicalText()) && ("".equals(fileContent) || fileContent.indexOf(methodStr) > 0)) {
                         map.putIfAbsent(methodStr, new ArrayList<>(10));
                         String whenStr = getWhen(pair, number, psiField);
-                        if (whenStr != null) {
-                            map.get(methodStr).add(getWhen(pair, number, psiField));
+                        if (whenStr != null && !"".equals(whenStr.trim())) {
+                            map.get(methodStr).add(whenStr.trim());
                         }
                         number++;
                     } else if ("void".equals(t.getCanonicalText()) && ("".equals(fileContent) || fileContent.indexOf(methodStr) > 0)) {
                         map.putIfAbsent(methodStr, new ArrayList<>(10));
-                        map.get(methodStr).add(getVoidWhen(serviceMethod, psiField));
+                        String whenStr = getVoidWhen(serviceMethod, psiField);
+                        if (methodStr != null && !"".equals(whenStr.trim())) {
+                            map.get(methodStr).add(whenStr.trim());
+                        }
                         number++;
                     }
                 }
@@ -360,7 +363,7 @@ public class GenerateTestCode {
                     println("        " + value);
                 });
             }
-            println("    }\n");
+            println("    }");
         } else if (valueList.size() > 0) {
             // 生成反射给成员变量赋值的代码
             if (junit5) {
@@ -489,7 +492,7 @@ public class GenerateTestCode {
                 if (currClass != null && currClass.getQualifiedName() == null && pair.getSecond() != null
                         && pair.getSecond().getSubstitutionMap() != null
                         && pair.getSecond().getSubstitutionMap().containsKey(currClass)) {
-                    // 如果是范型
+                    // 如果是泛型
                     psiCurrType = pair.getSecond().getSubstitutionMap().get(currClass);
                     currClass = PsiUtil.resolveClassInType(psiCurrType);
                 }
@@ -561,13 +564,12 @@ public class GenerateTestCode {
             } else {
                 println(defString + invokeString(myClass, method, meta));
             }
+            println("");
 
             Set<List<String>> whenList = whenMap.get(method.getName());
             if (whenList != null && !whenList.isEmpty()) {
-                for (List<String> oneList : whenList) {
-                    println("");
-                    println(String.join("\n", oneList));
-                }
+                println(whenList.stream().filter((item) -> !item.isEmpty()).map(
+                        (oneList) -> String.join("\n", oneList)).collect(Collectors.joining("\n\n")));
 
                 if (method.hasModifier(JvmModifier.PRIVATE)) {
                     println("method.invoke(" + serviceName + joinStr + String.join(", ", meta) + ");");
@@ -628,6 +630,7 @@ public class GenerateTestCode {
                 } else {
                     println(invokeString(myClass, method, meta));
                 }
+                println("");
             }
 
             if ("void".equals(returnType)) {
@@ -765,7 +768,7 @@ public class GenerateTestCode {
         if (returnClass != null && returnClass.getQualifiedName() == null && pair.getSecond() != null
                 && pair.getSecond().getSubstitutionMap() != null
                 && pair.getSecond().getSubstitutionMap().containsKey(returnClass)) {
-            // 如果是范型
+            // 如果是泛型
             returnType = pair.getSecond().getSubstitutionMap().get(returnClass);
             returnClass = PsiUtil.resolveClassInType(returnType);
         }
@@ -793,7 +796,7 @@ public class GenerateTestCode {
                 setImport("java.util.List");
                 setImport("java.util.ArrayList");
                 if (returnTypeText.contains("<")) {
-                    return getDoReturnListWhen(serviceMethod, psiField, psiClassReferenceType, number);
+                    return getDoReturnListWhen(pair, psiField, psiClassReferenceType, number);
                 }
                 // 无法确定传参类型
                 setLine = getPresentableText(returnType.getPresentableText()) + " then" + number + " = new " +
@@ -804,7 +807,7 @@ public class GenerateTestCode {
                 setImport("java.util.Map");
                 setImport("java.util.HashMap");
                 if (returnTypeText.contains("<")) {
-                    return getDoReturnMapWhen(serviceMethod, psiField, psiClassReferenceType, number);
+                    return getDoReturnMapWhen(pair, psiField, psiClassReferenceType, number);
                 }
                 // 无法确定传参类型
                 setLine = getPresentableText(returnType.getPresentableText()) + " then" + number + " = new HashMap<>" +
@@ -858,17 +861,25 @@ public class GenerateTestCode {
         return result.toString();
     }
 
-    private String getDoReturnListWhen(PsiMethod serviceMethod, PsiField psiField,
+    private String getDoReturnListWhen(Pair<PsiMethod, PsiSubstitutor> pair, PsiField psiField,
                                        PsiClassReferenceType psiClassReferenceType, int number) throws Exception {
         String serviceName = psiField.getName();
 
         // 取得 List<E> E 的类型
         PsiType listType =
                 psiClassReferenceType.resolveGenerics().getSubstitutor().getSubstitutionMap().values().stream().findFirst().get();
+        PsiClass psiClass = PsiUtil.resolveClassInType(listType);
+        if (psiClass != null && psiClass instanceof PsiTypeParameter && pair.getSecond() != null
+                && pair.getSecond().getSubstitutionMap() != null
+                && pair.getSecond().getSubstitutionMap().containsKey(psiClass)) {
+            // 如果是泛型
+            listType = pair.getSecond().getSubstitutionMap().get(psiClass);
+        }
 
         String returnTypeText = listType.getCanonicalText();
 
         int same = 0;
+        PsiMethod serviceMethod = pair.getFirst();
         for (PsiParameter param : serviceMethod.getParameterList().getParameters()) {
             String canonicalText = param.getType().getCanonicalText();
 
@@ -906,13 +917,13 @@ public class GenerateTestCode {
         }
         String type = getPresentableText(serviceMethod.getReturnType().getPresentableText());
         String setLine = type + " then" + number + " = new ArrayList<>(10);";
-        if (type.contains("<")) {
+        if (listType != null) {
             setLine = setLine + "\nthen" + number + ".add(" + getDefaultVal(listType) + ");";
         }
         return setLine + "\nwhen(" + serviceName + "." + methodParame(serviceMethod) + ").thenReturn(then" + number + ");";
     }
 
-    private String getDoReturnMapWhen(PsiMethod serviceMethod, PsiField psiField,
+    private String getDoReturnMapWhen(Pair<PsiMethod, PsiSubstitutor> pair, PsiField psiField,
                                       PsiClassReferenceType psiClassReferenceType, int number) throws Exception {
         String serviceName = psiField.getName();
 
@@ -922,9 +933,18 @@ public class GenerateTestCode {
         PsiType mapType = substitutionList.get(0);
         PsiType mapKeyType = substitutionList.get(1);
 
+        PsiClass psiClass = PsiUtil.resolveClassInType(mapType);
+        if (psiClass != null && psiClass instanceof PsiTypeParameter && pair.getSecond() != null
+                && pair.getSecond().getSubstitutionMap() != null
+                && pair.getSecond().getSubstitutionMap().containsKey(psiClass)) {
+            // 如果是泛型
+            mapType = pair.getSecond().getSubstitutionMap().get(psiClass);
+        }
+
         String returnTypeText = mapType.getCanonicalText();
 
         int same = 0;
+        PsiMethod serviceMethod = pair.getFirst();
         for (PsiParameter param : serviceMethod.getParameterList().getParameters()) {
             String canonicalText = param.getType().getCanonicalText();
 
@@ -943,7 +963,7 @@ public class GenerateTestCode {
         }
         String type = getPresentableText(serviceMethod.getReturnType().getPresentableText());
         String setLine = type + " then" + number + " = new HashMap<>(15);";
-        if (type.contains("<")) {
+        if (mapKeyType != null) {
             setLine =
                     setLine + "\nthen" + number + ".put(" + getDefaultVal(mapKeyType) + ", " + getDefaultVal(mapType) + ");";
         }
@@ -1006,19 +1026,6 @@ public class GenerateTestCode {
         }
 
         return count;
-    }
-
-    private String getDefType(PsiType returnType, PsiField field) throws Exception {
-        return getDefType(getType(returnType.getCanonicalText()), field);
-    }
-
-    private String getDefType(String returnTypeName, PsiParameter field) throws Exception {
-        return returnTypeName;
-    }
-
-    private String getDefType(String returnTypeName, PsiField field) throws Exception {
-
-        return returnTypeName;
     }
 
     private List<PsiMethod> getMethods(PsiClass myClass, Class myClass2) {
@@ -1218,6 +1225,7 @@ public class GenerateTestCode {
             }
             String name = field.getName().substring(0, 1).toUpperCase(Locale.ENGLISH) + field.getName().substring(1);
             result.add("vo.set" + name + "(" + getDefaultVal(field.getType()) + ");\n");
+            break;
         }
         return String.join("", result) + "return vo;";
     }
@@ -1498,9 +1506,12 @@ public class GenerateTestCode {
 
     private static List<String> readFileContent(PsiClass myClass) {
         List<String> sbf = new ArrayList<>(10);
-        while (myClass.getSuperClass() != null && !"java.lang.Object".equals(myClass.getSuperClass().getQualifiedName())) {
+        while (true) {
             sbf.addAll(Arrays.asList(myClass.getText().split("\n")));
             myClass = myClass.getSuperClass();
+            if (!(myClass != null && !"java.lang.Object".equals(myClass.getQualifiedName()))) {
+                break;
+            }
         }
         return sbf;
     }
